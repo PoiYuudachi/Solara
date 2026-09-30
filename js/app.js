@@ -13,16 +13,19 @@ import {
     normalizeSource
 } from "./constants.js";
 import { dom } from "./dom.js";
-import { state, validateStateConsistency } from "./state.js";
+import { state, validateStateConsistency, initialSourceCleanup } from "./state.js";
 import {
     safeSetLocalStorage,
     safeGetLocalStorage,
+    safeRemoveLocalStorage,
     parseJSON,
     persistentStorage,
     setRemoteSyncEnabled,
     isRemoteSyncEnabled,
     syncLocalDataToCloud,
-    preferHttpsUrl
+    preferHttpsUrl,
+    pruneUnsupportedSourceSongs,
+    isSupportedSongSource
 } from "./core/storage.js";
 import {
     showAlbumCoverPlaceholder,
@@ -130,6 +133,9 @@ const debugLog = createDebugLogger(state, dom);
 initDebugShortcut(state, dom, debugLog);
 
 const isMobileView = Boolean(window.__SOLARA_IS_MOBILE);
+
+// 本次会话中从云端快照额外清理掉的失效音源歌曲数量（与本地清理合并提示）
+let remoteSourceCleanupCount = 0;
 
 // 状态保存快捷方法
 export function savePlayerState(options = {}) {
@@ -1517,6 +1523,35 @@ export async function applyPersistentSnapshotFromRemote(data) {
         }
     }
 
+    // 云端快照可能仍保存着已失效音源（kuwo/joox/bilibili）的歌曲，
+    // 在渲染前统一清理并重新对齐指针，避免同步把已清理的歌曲又带回来。
+    const remotePlaylistPrune = pruneUnsupportedSourceSongs(state.playlistSongs, state.currentTrackIndex);
+    if (remotePlaylistPrune.removed > 0) {
+        state.playlistSongs = remotePlaylistPrune.songs;
+        state.currentTrackIndex = remotePlaylistPrune.currentIndex;
+        safeSetLocalStorage("playlistSongs", JSON.stringify(state.playlistSongs), { skipRemote: true });
+        safeSetLocalStorage("currentTrackIndex", String(state.currentTrackIndex), { skipRemote: true });
+        remoteSourceCleanupCount += remotePlaylistPrune.removed;
+        playlistUpdated = true;
+    }
+
+    const remoteFavoritePrune = pruneUnsupportedSourceSongs(state.favoriteSongs, state.currentFavoriteIndex);
+    if (remoteFavoritePrune.removed > 0) {
+        state.favoriteSongs = remoteFavoritePrune.songs;
+        state.currentFavoriteIndex = remoteFavoritePrune.currentIndex;
+        safeSetLocalStorage("favoriteSongs", JSON.stringify(state.favoriteSongs), { skipRemote: true });
+        safeSetLocalStorage("currentFavoriteIndex", String(state.currentFavoriteIndex), { skipRemote: true });
+        remoteSourceCleanupCount += remoteFavoritePrune.removed;
+        favoritesUpdated = true;
+    }
+
+    if (state.currentSong && !isSupportedSongSource(state.currentSong)) {
+        state.currentSong = null;
+        state.currentTrackIndex = -1;
+        safeRemoveLocalStorage("currentSong", { skipRemote: true });
+        safeSetLocalStorage("currentTrackIndex", "-1", { skipRemote: true });
+    }
+
     // 重新校准状态自洽
     validateStateConsistency(dom, {
         debugLog,
@@ -1693,6 +1728,13 @@ export async function bootstrap() {
                 if (avail) setRemoteSyncEnabled(true);
             });
         }
+    }
+
+    // 失效音源清理提示（本地存储 + 云端快照合并统计）
+    const cleanedTotal = initialSourceCleanup.total + remoteSourceCleanupCount;
+    if (cleanedTotal > 0) {
+        debugLog(`[音源清理] 已移除 ${cleanedTotal} 首来自失效音源（kuwo/joox/bilibili）的歌曲`);
+        showNotification(`已清理 ${cleanedTotal} 首失效音源的歌曲`, "info", dom);
     }
 }
 

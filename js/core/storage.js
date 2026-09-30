@@ -7,6 +7,7 @@ import {
     STORAGE_KEYS_TO_SYNC,
     PALETTE_STORAGE_KEY,
     API,
+    SOURCE_OPTIONS,
     normalizeSource
 } from "../constants.js";
 
@@ -222,6 +223,55 @@ export function sanitizeStoredSearchState(data, defaultSource = "netease") {
     const results = cloneSearchResults(data.results);
 
     return { keyword, source, page, hasMore, results };
+}
+
+/**
+ * 判断歌曲所属音源是否仍然可用（用于清理失效音源的历史数据）。
+ * 关键：source 缺失或为空字符串时 getSongUrl() 会回退到默认音源，这些歌曲仍可播放，
+ * 必须保留；只有「非空但已不在 SOURCE_OPTIONS 中」的音源才算失效。
+ */
+export function isSupportedSongSource(song) {
+    const source = song && typeof song.source === "string" ? song.source.trim().toLowerCase() : "";
+    if (source === "") {
+        return true;
+    }
+    return SOURCE_OPTIONS.some((option) => option.value.toLowerCase() === source);
+}
+
+/** 依据旧索引在过滤后重新定位：指向同一首歌；若该曲被移除则退到其后第一首 */
+function remapIndexAfterPrune(oldIndex, keepFlags) {
+    if (!Number.isInteger(oldIndex) || oldIndex < 0) {
+        return oldIndex;
+    }
+    const keptCount = keepFlags.reduce((count, keep) => count + (keep ? 1 : 0), 0);
+    if (keptCount === 0) {
+        return -1;
+    }
+    let newIndex = 0;
+    for (let i = 0; i < oldIndex && i < keepFlags.length; i += 1) {
+        if (keepFlags[i]) {
+            newIndex += 1;
+        }
+    }
+    return Math.min(newIndex, keptCount - 1);
+}
+
+/**
+ * 清理历史数据中来自已失效音源的歌曲（一次性数据迁移）。
+ * 返回清理后的列表、被移除的数量，以及与当前曲目对齐后的新索引。
+ */
+export function pruneUnsupportedSourceSongs(songs, currentIndex = -1) {
+    const list = Array.isArray(songs) ? songs : [];
+    const keepFlags = list.map((song) => isSupportedSongSource(song));
+    const removed = keepFlags.reduce((count, keep) => count + (keep ? 0 : 1), 0);
+    if (removed === 0) {
+        return { songs: list, removed: 0, currentIndex };
+    }
+    return {
+        songs: list.filter((_, index) => keepFlags[index]),
+        removed,
+        currentIndex: remapIndexAfterPrune(currentIndex, keepFlags)
+    };
 }
 
 export function preferHttpsUrl(url) {

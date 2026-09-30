@@ -26,6 +26,7 @@ export const dom = {
     searchClearBtn: document.getElementById("searchClearBtn"),
     searchBtn: document.getElementById("searchBtn"),
     closeSearchBtn: document.getElementById("closeSearchBtn"),
+    sourceSelectWrapper: document.getElementById("sourceSelectWrapper"),
     sourceSelectButton: document.getElementById("sourceSelectButton"),
     sourceSelectLabel: document.getElementById("sourceSelectLabel"),
     sourceMenu: document.getElementById("sourceMenu"),

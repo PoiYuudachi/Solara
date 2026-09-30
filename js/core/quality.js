@@ -50,11 +50,28 @@ export function updateQualityLabel(state, dom) {
     }
 }
 
+/**
+ * 音源选择器可见性：仅剩一个可用音源时隐藏整个选择器（含下拉菜单）。
+ * 日后向上游补回音源后会自动恢复显示，无需改动这里。
+ */
+function syncSourceSelectorVisibility(dom) {
+    const wrapper = dom.sourceSelectWrapper;
+    if (!wrapper) {
+        return;
+    }
+    const hasChoice = SOURCE_OPTIONS.length > 1;
+    wrapper.style.display = hasChoice ? "" : "none";
+    if (!hasChoice && dom.sourceMenu) {
+        dom.sourceMenu.classList.remove("show");
+    }
+}
+
 export function updateSourceLabel(state, dom) {
     const option = SOURCE_OPTIONS.find(item => item.value === state.searchSource) || SOURCE_OPTIONS[0];
     if (dom.sourceSelectLabel) {
         dom.sourceSelectLabel.textContent = option.label;
     }
+    syncSourceSelectorVisibility(dom);
 }
 
 export function buildQualityMenu(state, dom) {

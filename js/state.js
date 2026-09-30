@@ -16,7 +16,9 @@ import {
     safeRemoveLocalStorage,
     parseJSON,
     cloneSearchResults,
-    sanitizeStoredSearchState
+    sanitizeStoredSearchState,
+    isSupportedSongSource,
+    pruneUnsupportedSourceSongs
 } from "./core/storage.js";
 
 // 1. 初始化读取本地缓存状态
@@ -117,13 +119,34 @@ const savedRadarSettings = (() => {
     return { genres: [...DEFAULT_RADAR_GENRES] };
 })();
 
+// 1.1 一次性数据迁移：清理历史播放列表/收藏中来自已失效音源的歌曲。
+// 上游已移除 kuwo / joox / bilibili，这些歌曲无法解析播放地址；而 source 为空字符串的
+// 歌曲会回退到默认音源、依旧可播放，因此由 isSupportedSongSource 保留。
+const playlistPrune = pruneUnsupportedSourceSongs(savedPlaylistSongs, savedCurrentTrackIndex);
+const favoritePrune = pruneUnsupportedSourceSongs(savedFavoriteSongs, savedCurrentFavoriteIndex);
+const prunedPlaylistSongs = playlistPrune.songs;
+const prunedFavoriteSongs = favoritePrune.songs;
+const prunedFavoriteIndex = favoritePrune.currentIndex;
+
+// 当前曲目若本身就来自失效音源，则一并重置为空闲态
+const currentSongPruned = Boolean(savedCurrentSong) && !isSupportedSongSource(savedCurrentSong);
+const resolvedCurrentSong = currentSongPruned ? null : savedCurrentSong;
+const resolvedCurrentTrackIndex = currentSongPruned ? -1 : playlistPrune.currentIndex;
+
+/** 本次启动清理掉的失效音源歌曲数量（供启动提示使用） */
+export const initialSourceCleanup = {
+    removedFromPlaylist: playlistPrune.removed,
+    removedFromFavorites: favoritePrune.removed,
+    total: playlistPrune.removed + favoritePrune.removed
+};
+
 // 2. 构建状态单例
 export const state = {
     radarSettings: savedRadarSettings,
     onlineSongs: [],
     searchResults: cloneSearchResults(savedLastSearchState?.results) || [],
     renderedSearchCount: 0,
-    currentTrackIndex: savedCurrentTrackIndex,
+    currentTrackIndex: resolvedCurrentTrackIndex,
     currentAudioUrl: null,
     lyricsData: [],
     currentLyricLine: -1,
@@ -132,15 +155,15 @@ export const state = {
     searchKeyword: savedLastSearchState?.keyword || "",
     searchSource: savedLastSearchState ? savedLastSearchState.source : savedSearchSource,
     hasMoreResults: typeof savedLastSearchState?.hasMore === "boolean" ? savedLastSearchState.hasMore : true,
-    currentSong: savedCurrentSong,
+    currentSong: resolvedCurrentSong,
     currentArtworkUrl: null,
     debugMode: false,
     isSearchMode: false,
-    playlistSongs: savedPlaylistSongs,
+    playlistSongs: prunedPlaylistSongs,
     playMode: savedPlayMode,
     playlistLastNonRandomMode: savedPlayMode === "random" ? "list" : savedPlayMode,
-    favoriteSongs: savedFavoriteSongs,
-    currentFavoriteIndex: savedCurrentFavoriteIndex,
+    favoriteSongs: prunedFavoriteSongs,
+    currentFavoriteIndex: prunedFavoriteIndex,
     currentList: savedCurrentList,
     favoritePlayMode: savedFavoritePlayMode,
     favoriteLastNonRandomMode: savedFavoritePlayMode === "random" ? "list" : savedFavoritePlayMode,
@@ -216,6 +239,19 @@ if (state.favoriteSongs.length === 0) {
     state.currentFavoriteIndex = 0;
 } else if (state.currentFavoriteIndex >= state.favoriteSongs.length) {
     state.currentFavoriteIndex = state.favoriteSongs.length - 1;
+}
+
+// 1.2 仅在确有失效音源歌曲被清理时落盘，避免下次启动重复清理
+if (initialSourceCleanup.total > 0 || currentSongPruned) {
+    safeSetLocalStorage("playlistSongs", JSON.stringify(state.playlistSongs), { skipRemote: true });
+    safeSetLocalStorage("currentTrackIndex", String(state.currentTrackIndex), { skipRemote: true });
+    safeSetLocalStorage("favoriteSongs", JSON.stringify(state.favoriteSongs), { skipRemote: true });
+    safeSetLocalStorage("currentFavoriteIndex", String(state.currentFavoriteIndex), { skipRemote: true });
+    if (state.currentSong) {
+        safeSetLocalStorage("currentSong", JSON.stringify(state.currentSong), { skipRemote: true });
+    } else {
+        safeRemoveLocalStorage("currentSong", { skipRemote: true });
+    }
 }
 
 // 挂载到 window，保证与原有代码及调试的兼容性

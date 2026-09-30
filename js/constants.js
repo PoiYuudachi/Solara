@@ -18,11 +18,16 @@ export const EXPLORE_RADAR_GENRES = [
     "美国Billboard榜",
 ];
 
+/**
+ * 可用音源列表。
+ * 上游聚合 API 目前仅 netease 能返回可播放直链，故下列失效音源已移除：
+ *   - kuwo     ：接口已直接拒绝该 source（"Value of `source` is not supported."）
+ *   - joox     ：搜索可用，但 types=url 恒返回空 url（br=-1），无法播放/下载
+ *   - bilibili ：同上，恒返回空 url
+ * 若日后上游恢复，按 { value, label } 结构补回即可。
+ */
 export const SOURCE_OPTIONS = [
-    { value: "netease", label: "网易云音乐" },
-    { value: "kuwo", label: "酷我音乐" },
-    { value: "joox", label: "JOOX音乐" },
-    { value: "bilibili", label: "哔哩哔哩" }
+    { value: "netease", label: "网易云音乐" }
 ];
 
 export const RADAR_PLAYLISTS = [

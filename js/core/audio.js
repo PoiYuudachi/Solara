@@ -589,6 +589,70 @@ export function playPrevious(state, dom, callbacks = {}) {
     }
 }
 
+// 音频 MIME → 扩展名映射。
+// 注意：故意不收录 audio/mpeg —— 实测上游 CDN 会把 FLAC 也标成 audio/mpeg，
+// 该 MIME 不具备区分度，交由下方的音质提示兜底。
+const AUDIO_MIME_EXTENSIONS = {
+    "audio/flac": "flac",
+    "audio/x-flac": "flac",
+    "audio/ape": "ape",
+    "audio/x-ape": "ape",
+    "audio/mp4": "m4a",
+    "audio/aac": "aac",
+    "audio/ogg": "ogg",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+};
+
+/**
+ * 推断音频文件扩展名：直链路径 → 明确的容器 MIME → 按请求音质兜底
+ */
+function resolveAudioExtension(contentType, sourceUrl, quality) {
+    // 1. 直链路径中的扩展名最可靠：实测与文件头魔数完全一致（mp3→ID3 / flac→fLaC）
+    try {
+        const match = new URL(sourceUrl, window.location.href).pathname.match(/\.([a-z0-9]{2,5})$/i);
+        if (match) {
+            return match[1].toLowerCase();
+        }
+    } catch (error) {
+        console.warn("无法从音频直链中解析扩展名:", error);
+    }
+
+    // 2. 明确的容器 MIME
+    const mime = String(contentType || "").split(";")[0].trim().toLowerCase();
+    if (AUDIO_MIME_EXTENSIONS[mime]) {
+        return AUDIO_MIME_EXTENSIONS[mime];
+    }
+
+    // 3. 剩下的 MIME（含不可信的 audio/mpeg）按请求音质判断
+    return quality === "999" ? "flac" : "mp3";
+}
+
+/** 清洗文件名中的非法字符，避免被文件系统或浏览器静默改写 */
+function sanitizeFileName(name) {
+    const cleaned = String(name || "")
+        .replace(/[\\/:*?"<>|\u0000-\u001F]/g, "_")
+        .replace(/\s+/g, " ")
+        .trim();
+    return cleaned.slice(0, 120) || "未命名";
+}
+
+/**
+ * 通过临时 <a download> 触发下载。
+ * 注意：download 属性仅在「同源 URL」或 blob:/data: 下生效；跨域直链会被浏览器
+ * 静默忽略（文件名退化为 URL 末段），且 target="_blank" 会导致新标签页直接播放，
+ * 因此这里绝不设置 target。
+ */
+function triggerAnchorDownload(href, fileName) {
+    const link = document.createElement("a");
+    link.href = href;
+    link.download = fileName;
+    link.rel = "noopener";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
 export async function downloadSong(song, quality = "320", dom = null) {
     try {
         showNotification("正在准备下载...", "info", dom);
@@ -596,35 +660,50 @@ export async function downloadSong(song, quality = "320", dom = null) {
         const audioUrl = API.getSongUrl(song, quality);
         const audioData = await API.fetchJson(audioUrl);
 
-        if (audioData && audioData.url) {
-            const proxiedAudioUrl = buildAudioProxyUrl(audioData.url);
-            const preferredAudioUrl = preferHttpsUrl(audioData.url);
-            const downloadUrl = proxiedAudioUrl || preferredAudioUrl || audioData.url;
-
-            const link = document.createElement("a");
-            link.href = downloadUrl;
-            const preferredExtension = quality === "999" ? "flac" : quality === "740" ? "ape" : "mp3";
-            const fileExtension = (() => {
-                try {
-                    const url = new URL(audioData.url);
-                    const pathname = url.pathname || "";
-                    const match = pathname.match(/\.([a-z0-9]+)$/i);
-                    if (match) return match[1];
-                } catch (error) {
-                    console.warn("无法从下载链接中解析扩展名:", error);
-                }
-                return preferredExtension;
-            })();
-            link.download = `${song.name} - ${Array.isArray(song.artist) ? song.artist.join(", ") : song.artist}.${fileExtension}`;
-            link.target = "_blank";
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-
-            showNotification("下载已开始", "success", dom);
-        } else {
+        if (!audioData || !audioData.url) {
             throw new Error("无法获取下载地址");
         }
+
+        const mediaUrl = buildAudioProxyUrl(audioData.url) || preferHttpsUrl(audioData.url) || audioData.url;
+        const artist = Array.isArray(song.artist) ? song.artist.join(", ") : (song.artist || "未知艺术家");
+        const baseName = sanitizeFileName(`${song.name} - ${artist}`);
+
+        let sameOrigin = false;
+        try {
+            sameOrigin = new URL(mediaUrl, window.location.href).origin === window.location.origin;
+        } catch (error) {
+            console.warn("无法解析音频地址来源，按跨域处理:", error);
+        }
+
+        if (sameOrigin) {
+            // 同源（如 /proxy?target=...）：download 属性可直接生效
+            triggerAnchorDownload(mediaUrl, `${baseName}.${resolveAudioExtension("", audioData.url, quality)}`);
+        } else {
+            // 跨域：先取回 Blob 换成本地 blob: URL，才能保住自定义文件名并直接落盘下载
+            let blob = null;
+            try {
+                const response = await fetch(mediaUrl, { mode: "cors", credentials: "omit" });
+                if (response.ok) {
+                    blob = await response.blob();
+                } else {
+                    console.warn(`音频 Blob 拉取失败，状态码 ${response.status}`);
+                }
+            } catch (error) {
+                console.warn("音频 Blob 拉取异常，降级为直链下载:", error);
+            }
+
+            if (blob && blob.size > 0) {
+                const extension = resolveAudioExtension(blob.type, audioData.url, quality);
+                const objectUrl = URL.createObjectURL(blob);
+                triggerAnchorDownload(objectUrl, `${baseName}.${extension}`);
+                window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+            } else {
+                // 兜底：即使 CDN 未开放 CORS，也保证扩展名正确
+                triggerAnchorDownload(mediaUrl, `${baseName}.${resolveAudioExtension("", audioData.url, quality)}`);
+            }
+        }
+
+        showNotification("下载已开始", "success", dom);
     } catch (error) {
         console.error("下载失败:", error);
         showNotification("下载失败，请稍后重试", "error", dom);

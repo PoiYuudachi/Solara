@@ -6,7 +6,8 @@ import {
     REMOTE_STORAGE_ENDPOINT,
     STORAGE_KEYS_TO_SYNC,
     PALETTE_STORAGE_KEY,
-    API
+    API,
+    normalizeSource
 } from "../constants.js";
 
 let remoteSyncEnabled = false;
@@ -214,7 +215,8 @@ export function sanitizeStoredSearchState(data, defaultSource = "netease") {
     }
 
     const keyword = typeof data.keyword === "string" ? data.keyword : "";
-    const source = typeof data.source === "string" ? data.source : defaultSource;
+    // 归一化音源：已被移除的音源（如 kuwo/joox/bilibili）自动回退到当前默认音源
+    const source = normalizeSource(typeof data.source === "string" ? data.source : defaultSource);
     const page = Number.isInteger(data.page) && data.page > 0 ? data.page : 1;
     const hasMore = typeof data.hasMore === "boolean" ? data.hasMore : true;
     const results = cloneSearchResults(data.results);
